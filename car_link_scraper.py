@@ -11,13 +11,22 @@ driver = webdriver.Chrome()
 car_link_set = set()
 
 
-#Araba modelleri belirlenmeli 2500 üstü
-car_model_list = ["bmw","audi","citroen","fiat","ford","honda","hyundai","mercedes-benz",
-                  "opel","peugeot","renault","seat","skoda","tofas","toyota",
-                  "volkswagen"]
+#Araba modelleri belirlenmeli 21 fazla veri modeli içeren modeller belirlendi.
+#İsminize göre yorum satırından kaldırıp kodunuzu çalıştırın
+# 21 Kasım'daki toplantıya kadar bitirmeye çalışın tahmini çalıştırma süresi 150 dk dır.
 
-# +2.5K 16 models
-# +1K - 2.5K chevrolet, dacia, kia, nissan, volvo  5 model eklenmeli mi eklenmemeli mi
+# Rıdvan 
+#car_model_list = ["bmw","audi","citroen","fiat","ford","honda","hyundai"]
+
+# Tavlan
+#car_model_list = ["mercedes-benz","opel","peugeot","renault","seat","skoda","tofas"]
+
+# Mirza
+#car_model_list = ["toyota","volkswagen","chevrolet", "dacia", "kia", "nissan", "volvo"]
+
+
+car_model_list = []
+
 
 for model in car_model_list:
 
