@@ -251,15 +251,29 @@ for car_model in car_model_list:
 
 
     index = 0
-    for url in json_data:
+    start_time = time.time()
+
+    #Önceki aşamalarda toplanmış veri sayılarına bak
+
+    try:
+        with open(f"car_data_{car_model}.json","r",encoding="utf-8") as file:
+            json_control = json.load(file)
+            index = len(json_control) - 1
+                
+            for i in range(index):
+                dict_list.append(json_control[i])
+    except:
+        print(f"{Fore.rgb(255, 191, 0)}Elimizde düşündüğümüz gibi bir dosya bulunmamaktadır!")
+
+    for url in json_data[index:]:
         index = index + 1 
-        start_time = time.time()
+        
         get_car_data(url)    
         finish_time = time.time()
 
-        print(f"{Fore.rgb(0, 255, 0)}Araba için harcanan süre {finish_time - start_time}s")
+        print(f"{Fore.rgb(0, 255, 0)} {index}. Araba  Süre => {finish_time - start_time}s")
         if(index % 5 == 0):
-            with open("car_data_test.json","w",encoding="utf-8") as file:
+            with open(f"car_data_{car_model}.json","w",encoding="utf-8") as file:
                 json.dump(dict_list,file,ensure_ascii=False, indent=4) 
             print(f"{Fore.rgb(0, 255, 0)}Index {index}'e kadar işlem başarıyla tamamlandı.")
 
