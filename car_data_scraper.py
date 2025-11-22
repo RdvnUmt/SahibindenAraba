@@ -152,10 +152,13 @@ def get_car_data(url):
         print(f"{Fore.rgb(255, 191, 0)}Araba sayfasında donanımla ilgili özellikler belirtilmemiş")
     #Sayfanın üstündeki bilgileri çekmeden bahsetmekteyiz.
     
-
-    property_list = WebDriverWait(driver, 5).until(
-                        EC.presence_of_all_elements_located((By.XPATH,"//div[@class='property-item']"))
-            )
+    try:
+        property_list = WebDriverWait(driver, 5).until(
+                            EC.presence_of_all_elements_located((By.XPATH,"//div[@class='property-item']"))
+                )
+    except:
+        print(f"{Fore.rgb(255, 191, 0)}Veri gereken zamanda yüklenemedi adım atlanıyor")
+        property_list = []
 
     for propert_item in property_list :
         try:
@@ -191,8 +194,9 @@ def get_car_data(url):
         info_list= car_information_tab.find_elements(By.CSS_SELECTOR,"li")
     except:
         print(f"{Fore.rgb(255, 0, 0)}Araçın bilgisinin olduğu alt tab bulunamadı")
+        info_list = []
 
-    for info in(info_list):
+    for info in info_list:
 
         try:
 
@@ -236,7 +240,7 @@ def get_car_data(url):
 # Tavlan
 #car_model_list = ["mercedes-benz","opel","peugeot","renault","seat","skoda","tofas"]
 
-# Mirza
+# Mirza chevrolette sorun oluştu onu düzeltirsin
 car_model_list = ["toyota","volkswagen","chevrolet", "dacia", "kia", "nissan", "volvo"]
 
 
@@ -268,11 +272,12 @@ for car_model in car_model_list:
     for url in json_data[index:]:
         index = index + 1 
         
-        get_car_data(url)    
+        if url:
+            get_car_data(url)    
         finish_time = time.time()
 
         print(f"{Fore.rgb(0, 255, 0)} {index}. Araba  Süre => {finish_time - start_time}s")
-        if(index % 5 == 0):
+        if(index % 25 == 0):
             with open(f"car_data_{car_model}.json","w",encoding="utf-8") as file:
                 json.dump(dict_list,file,ensure_ascii=False, indent=4) 
             print(f"{Fore.rgb(0, 255, 0)}Index {index}'e kadar işlem başarıyla tamamlandı.")
