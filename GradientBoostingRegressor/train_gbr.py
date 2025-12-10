@@ -1,3 +1,5 @@
+# train_gbr.py
+
 from __future__ import annotations
 
 import argparse
@@ -6,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from joblib import dump, load
+from sklearn.base import clone
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.model_selection import RandomizedSearchCV, KFold
 from sklearn.compose import TransformedTargetRegressor
@@ -22,8 +25,9 @@ from utils import (
 
 def maybe_wrap_log_target(regressor, y_train: np.ndarray):
     """
-    If y is suitable (min > -1), wrap model with log1p target transform.
-    This often helps for heavy-tailed price targets.
+    Eğer hedef değişken bunun için uygunsa (min > -1),
+    modeli log1p hedef dönüşümü ile wrap eder.
+    Özellikle ağır kuyruklu fiyat dağılımlarında işe yarar.
     """
     y_train = np.asarray(y_train).reshape(-1)
     if np.nanmin(y_train) > -1.0:
@@ -40,7 +44,7 @@ def maybe_wrap_log_target(regressor, y_train: np.ndarray):
 
 
 def get_feature_names(preprocessor_path: Path) -> list[str] | None:
-    """Best-effort feature name extraction for feature importance."""
+    """Feature importance için, mümkünse preprocessor içinden feature isimlerini çek."""
     if not preprocessor_path.exists():
         return None
     try:
@@ -53,12 +57,20 @@ def get_feature_names(preprocessor_path: Path) -> list[str] | None:
     return None
 
 
+def get_inner_estimator(estimator):
+    """
+    TransformedTargetRegressor kullanıldığında içteki asıl regresörü döndür.
+    Aksi halde estimator'ın kendisini döndür.
+    """
+    return getattr(estimator, "regressor_", estimator)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", type=str, default=".", help="npy/joblib dosyalarının bulunduğu klasör")
     parser.add_argument("--artifacts-dir", type=str, default="artifacts", help="çıktıların kaydedileceği klasör")
     parser.add_argument("--tune", action="store_true", help="RandomizedSearchCV ile hiperparametre araması yap")
-    parser.add_argument("--cv", type=int, default=3, help="tuning için CV fold sayısı")
+    parser.add_argument("--cv", type=int, default=3, help="tuning için KFold fold sayısı")
     parser.add_argument("--n-iter", type=int, default=30, help="RandomizedSearch iter sayısı")
     parser.add_argument("--seed", type=int, default=42, help="random_state")
     args = parser.parse_args()
@@ -66,7 +78,9 @@ def main():
     data_dir = Path(args.data_dir)
     artifacts_dir = ensure_dir(args.artifacts_dir)
 
-    # Load data
+    # -------------------------------------------------------------------------
+    # 1) Veriyi yükle (train / test olarak ikiye bölünmüş durumda)
+    # -------------------------------------------------------------------------
     X_train = safe_load_npy(data_dir / "X_train_processed.npy")
     X_test = safe_load_npy(data_dir / "X_test_processed.npy")
     y_train = safe_load_npy(data_dir / "y_train.npy").reshape(-1)
@@ -75,15 +89,44 @@ def main():
     print(f"X_train: {X_train.shape}  X_test: {X_test.shape}")
     print(f"y_train: {y_train.shape}  y_test: {y_test.shape}")
 
-    # Base model
+    # -------------------------------------------------------------------------
+    # 2) Baz model şablonu + gerekiyorsa log-target wrap
+    # -------------------------------------------------------------------------
     base = GradientBoostingRegressor(random_state=args.seed)
-    model, used_log = maybe_wrap_log_target(base, y_train)
+    model_template, used_log = maybe_wrap_log_target(base, y_train)
 
-    best_estimator = model
-    best_params = getattr(base, "get_params", lambda: {})()
+    # -------------------------------------------------------------------------
+    # 3) Baseline model (hiç tuning yok, default hiperparametreler)
+    # -------------------------------------------------------------------------
+    baseline_estimator = clone(model_template)
+    baseline_estimator.fit(X_train, y_train)
+
+    y_pred_train_baseline = baseline_estimator.predict(X_train)
+    y_pred_test_baseline = baseline_estimator.predict(X_test)
+
+    baseline_train_metrics = regression_metrics(y_train, y_pred_train_baseline)
+    baseline_test_metrics = regression_metrics(y_test, y_pred_test_baseline)
+
+    print("\n=== Baseline model (default GBR) ===")
+    print("Train metrics:", baseline_train_metrics)
+    print("Test  metrics:", baseline_test_metrics)
+
+    baseline_inner = get_inner_estimator(baseline_estimator)
+    baseline_params = baseline_inner.get_params()
+
+    # -------------------------------------------------------------------------
+    # 4) Hiperparametre optimizasyonu (RandomizedSearchCV + KFold)
+    #    Yalnızca --tune verilmişse çalışır
+    # -------------------------------------------------------------------------
+    tuned_estimator = None
+    tuned_train_metrics = None
+    tuned_test_metrics = None
+    best_params = None
+    cv_info = None
 
     if args.tune:
-        # NOTE: With TransformedTargetRegressor, inner regressor params are prefixed with 'regressor__'
+        # TransformedTargetRegressor kullanıldığında iç regresör parametreleri
+        # 'regressor__' prefix'i ile verilmeli
         param_dist = {
             "regressor__n_estimators": [200, 400, 600, 800, 1000],
             "regressor__learning_rate": [0.01, 0.03, 0.05, 0.08, 0.1],
@@ -97,41 +140,93 @@ def main():
         cv = KFold(n_splits=args.cv, shuffle=True, random_state=args.seed)
 
         search = RandomizedSearchCV(
-            estimator=model,
+            estimator=clone(model_template),
             param_distributions=param_dist,
             n_iter=args.n_iter,
-            scoring="neg_mean_absolute_error",
+            scoring="neg_mean_absolute_error",  # MAE'yi minimize ediyoruz
             cv=cv,
             random_state=args.seed,
             n_jobs=-1,
             verbose=1,
         )
+
+        print("\n=== RandomizedSearchCV ile hiperparametre optimizasyonu başlıyor ===")
         search.fit(X_train, y_train)
-        best_estimator = search.best_estimator_
+
+        tuned_estimator = search.best_estimator_
         best_params = search.best_params_
+
+        # CV sonuçlarını CSV'ye kaydet (bonus / rapor için)
+        cv_results = pd.DataFrame(search.cv_results_)
+        if "mean_test_score" in cv_results.columns:
+            # skor: neg_mean_absolute_error; pozitif MAE için işaret çeviriyoruz
+            cv_results["mean_val_mae"] = -cv_results["mean_test_score"]
+        cv_results.to_csv(artifacts_dir / "gbr_cv_results.csv", index=False)
+
+        # CV özeti
+        cv_info = {
+            "cv_folds": int(args.cv),
+            "n_iter": int(args.n_iter),
+            "scoring": "neg_mean_absolute_error",
+            "best_cv_score_neg_mae": float(search.best_score_),
+            "best_cv_mae": float(-search.best_score_),
+        }
+
+        # Tuned model metrikleri
+        y_pred_train_tuned = tuned_estimator.predict(X_train)
+        y_pred_test_tuned = tuned_estimator.predict(X_test)
+
+        tuned_train_metrics = regression_metrics(y_train, y_pred_train_tuned)
+        tuned_test_metrics = regression_metrics(y_test, y_pred_test_tuned)
+
+        print("\n=== Tuned model (RandomizedSearchCV sonucu) ===")
         print("Best params:", best_params)
+        print("Train metrics:", tuned_train_metrics)
+        print("Test  metrics:", tuned_test_metrics)
+
+    # -------------------------------------------------------------------------
+    # 5) Nihai seçilen model (tune varsa tuned, yoksa baseline)
+    # -------------------------------------------------------------------------
+    if tuned_estimator is not None:
+        final_estimator = tuned_estimator
+        final_train_metrics = tuned_train_metrics
+        final_test_metrics = tuned_test_metrics
+        selected_model = "tuned"
     else:
-        best_estimator.fit(X_train, y_train)
+        final_estimator = baseline_estimator
+        final_train_metrics = baseline_train_metrics
+        final_test_metrics = baseline_test_metrics
+        selected_model = "baseline"
 
-    # Evaluate
-    y_pred_train = best_estimator.predict(X_train)
-    y_pred_test = best_estimator.predict(X_test)
+    # Nihai model için pred / plot
+    y_pred_train_final = final_estimator.predict(X_train)
+    y_pred_test_final = final_estimator.predict(X_test)
 
-    train_metrics = regression_metrics(y_train, y_pred_train)
-    test_metrics = regression_metrics(y_test, y_pred_test)
+    print(f"\n=== Final seçilen model: {selected_model} ===")
+    print("Final train metrics:", final_train_metrics)
+    print("Final test  metrics:", final_test_metrics)
 
-    print("Train metrics:", train_metrics)
-    print("Test  metrics:", test_metrics)
+    # -------------------------------------------------------------------------
+    # 6) Model + metadata kaydet
+    # -------------------------------------------------------------------------
+    dump(final_estimator, artifacts_dir / "gbr_model.joblib")
 
-    # Save model + metadata
-    dump(best_estimator, artifacts_dir / "gbr_model.joblib")
+    # Parametre özetleri
+    inner_final = get_inner_estimator(final_estimator)
+    final_params = inner_final.get_params()
 
     meta = {
         "model": "GradientBoostingRegressor",
         "used_log_target": bool(used_log),
-        "best_params": best_params,
-        "train_metrics": train_metrics,
-        "test_metrics": test_metrics,
+        "selected_model": selected_model,
+        "train_metrics": final_train_metrics,
+        "test_metrics": final_test_metrics,
+        "final_params": final_params,
+        "baseline": {
+            "params": baseline_params,
+            "train_metrics": baseline_train_metrics,
+            "test_metrics": baseline_test_metrics,
+        },
         "shapes": {
             "X_train": list(X_train.shape),
             "X_test": list(X_test.shape),
@@ -139,14 +234,40 @@ def main():
             "y_test": list(y_test.shape),
         },
     }
+
+    if tuned_estimator is not None:
+        tuned_inner = get_inner_estimator(tuned_estimator)
+        tuned_params = tuned_inner.get_params()
+        meta["tuned"] = {
+            "search_best_params": best_params,
+            "inner_estimator_params": tuned_params,
+            "cv_info": cv_info,
+            "train_metrics": tuned_train_metrics,
+            "test_metrics": tuned_test_metrics,
+        }
+
     save_json(meta, artifacts_dir / "metrics_and_params.json")
 
-    # Plots
-    plot_predictions(y_test, y_pred_test, artifacts_dir / "pred_vs_actual_test.png", title="Test: Predicted vs Actual")
-    plot_residuals(y_test, y_pred_test, artifacts_dir / "residuals_test", title_prefix="Test residuals")
+    # -------------------------------------------------------------------------
+    # 7) Nihai model için grafikler (test seti)
+    # -------------------------------------------------------------------------
+    plot_predictions(
+        y_test,
+        y_pred_test_final,
+        artifacts_dir / "pred_vs_actual_test.png",
+        title="Test: Predicted vs Actual (final GBR)",
+    )
+    plot_residuals(
+        y_test,
+        y_pred_test_final,
+        artifacts_dir / "residuals_test",
+        title_prefix="Test residuals (final GBR)",
+    )
 
-    # Feature importances (best effort)
-    inner = getattr(best_estimator, "regressor_", best_estimator)
+    # -------------------------------------------------------------------------
+    # 8) Feature importance (nihai model üzerinden)
+    # -------------------------------------------------------------------------
+    inner = get_inner_estimator(final_estimator)
     if hasattr(inner, "feature_importances_"):
         importances = np.asarray(inner.feature_importances_, dtype=float).reshape(-1)
         feat_names = get_feature_names(data_dir / "preprocessor.joblib")
@@ -168,7 +289,7 @@ def main():
         plt.savefig(artifacts_dir / "feature_importance_top30.png", dpi=160)
         plt.close()
 
-    print(f"Saved artifacts to: {artifacts_dir.resolve()}")
+    print(f"\nSaved artifacts to: {artifacts_dir.resolve()}")
 
 
 if __name__ == "__main__":

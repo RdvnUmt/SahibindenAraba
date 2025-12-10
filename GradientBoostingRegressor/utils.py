@@ -4,12 +4,11 @@ import json
 from pathlib import Path
 from typing import Dict
 
+import inspect
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-import inspect
-
 
 
 def ensure_dir(path: str | Path) -> Path:
@@ -19,16 +18,27 @@ def ensure_dir(path: str | Path) -> Path:
 
 
 def safe_load_npy(path: str | Path) -> np.ndarray:
-    """Loads .npy safely; falls back to allow_pickle=True only if needed."""
+    """
+    .npy dosyalarını güvenli şekilde yükler.
+    Gerekmedikçe allow_pickle=True kullanmaz.
+    """
     path = Path(path)
     try:
         return np.load(path, allow_pickle=False)
     except ValueError:
-        # Only enable pickle if the file is trusted
+        # Sadece güvenilir dosyalar için pickle açılır
         return np.load(path, allow_pickle=True)
 
 
 def regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+    """
+    Regresyon metrikleri:
+      - MAE
+      - RMSE
+      - R^2
+
+    Final raporda kullanacağınızı belirttiğiniz metrik seti ile uyumlu.
+    """
     y_true = np.asarray(y_true).reshape(-1)
     y_pred = np.asarray(y_pred).reshape(-1)
 
@@ -38,18 +48,13 @@ def regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, floa
     sig = inspect.signature(mean_squared_error)
     if "squared" in sig.parameters:
         rmse = float(mean_squared_error(y_true, y_pred, squared=False))
-        mse = float(mean_squared_error(y_true, y_pred, squared=True))
     else:
         mse = float(mean_squared_error(y_true, y_pred))
         rmse = float(np.sqrt(mse))
 
     r2 = float(r2_score(y_true, y_pred))
 
-    eps = 1e-9
-    mape = float(np.mean(np.abs((y_true - y_pred) / np.maximum(np.abs(y_true), eps))) * 100.0)
-
-    return {"mae": mae, "rmse": rmse, "mse": mse, "r2": r2, "mape_%": mape}
-
+    return {"mae": mae, "rmse": rmse, "r2": r2}
 
 
 def save_json(data: dict, path: str | Path) -> None:
@@ -63,6 +68,9 @@ def plot_predictions(
     out_path: str | Path,
     title: str = "Predicted vs Actual",
 ) -> None:
+    """
+    Gerçek vs tahmin değerleri scatter plot olarak çizer.
+    """
     y_true = np.asarray(y_true).reshape(-1)
     y_pred = np.asarray(y_pred).reshape(-1)
 
@@ -89,6 +97,9 @@ def plot_residuals(
     out_path_prefix: str | Path,
     title_prefix: str = "Residuals",
 ) -> None:
+    """
+    Residual dağılımı ve residual vs predicted grafikleri üretir.
+    """
     y_true = np.asarray(y_true).reshape(-1)
     y_pred = np.asarray(y_pred).reshape(-1)
     residuals = y_true - y_pred
@@ -96,6 +107,7 @@ def plot_residuals(
     out_path_prefix = Path(out_path_prefix)
     ensure_dir(out_path_prefix.parent)
 
+    # Histogram
     plt.figure(figsize=(8, 4.5))
     sns.histplot(residuals, bins=50, kde=True)
     plt.title(f"{title_prefix} distribution")
@@ -104,6 +116,7 @@ def plot_residuals(
     plt.savefig(str(out_path_prefix) + "_hist.png", dpi=160)
     plt.close()
 
+    # Residual vs predicted
     plt.figure(figsize=(8, 4.5))
     sns.scatterplot(x=y_pred, y=residuals, s=18, alpha=0.6)
     plt.axhline(0.0, linestyle="--", linewidth=1)
